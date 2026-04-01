@@ -1,0 +1,6 @@
+<Solution>
+  <Project Path="HlslDecompiler.csproj" />
+  <Project Path="HlslDecompiler.Tests/HlslDecompiler.Tests.csproj">
+    <BuildDependency Project="HlslDecompiler.csproj" />
+  </Project>
+</Solution>
