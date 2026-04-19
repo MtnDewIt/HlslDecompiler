@@ -45,7 +45,7 @@ class InstructionParser
     {
         _shaderModel = shader;
         _registerState = new RegisterState(shader);
-        _statements = new List<IStatement>();
+        _statements = [];
         _currentStatements = new Stack<IStatement>();
 
         int instructionPointer = 0;
@@ -118,8 +118,11 @@ class InstructionParser
         {
             switch (instruction.Opcode)
             {
+                case D3D10Opcode.BreakC:
+                    //InsertBreak();
+                    break;
                 case D3D10Opcode.Cut:
-                    // TODO: InsertRestartStrip();
+                    InsertRestartStrip();
                     break;
                 case D3D10Opcode.Discard:
                     {
@@ -134,6 +137,9 @@ class InstructionParser
                             var registerKey = new D3D10RegisterKey(OperandType.Temp, registerNumber);
                             int writeMask = 1; // declare only first component here, expand later
                             _registerState.DeclareRegister(registerKey, writeMask);
+                            var destinationKey = new RegisterComponentKey(registerKey, 0);
+                            var tempInput = new RegisterInputNode(destinationKey);
+                            SetActiveOutput(destinationKey, tempInput);
                         }
                         break;
                     }
@@ -171,8 +177,17 @@ class InstructionParser
                     }
                 case D3D10Opcode.DclResource:
                     {
-                        var registerKey = instruction.GetParamRegisterKey(0) as D3D10RegisterKey;
+                        var registerKey = instruction.GetParamRegisterKey(0);
                         _registerState.DeclareResource(registerKey, instruction.GetResourceDimension(), instruction.GetResourceReturnTypeToken());
+                        var destinationKey = new RegisterComponentKey(registerKey, 0);
+                        var resourceInput = new RegisterInputNode(destinationKey);
+                        SetActiveOutput(destinationKey, resourceInput);
+                        break;
+                    }
+                case D3D10Opcode.DclResourceStructured:
+                    {
+                        var registerKey = instruction.GetParamRegisterKey(0);
+                        _registerState.DeclareStructuredBuffer(registerKey, instruction.GetResourceStructuredBufferStride());
                         var destinationKey = new RegisterComponentKey(registerKey, 0);
                         var resourceInput = new RegisterInputNode(destinationKey);
                         SetActiveOutput(destinationKey, resourceInput);
@@ -180,16 +195,53 @@ class InstructionParser
                     }
                 case D3D10Opcode.DclSampler:
                     {
-                        var registerKey = instruction.GetParamRegisterKey(0) as D3D10RegisterKey;
+                        var registerKey = instruction.GetParamRegisterKey(0);
                         _registerState.DeclareRegister(registerKey, 0xF);
                         var destinationKey = new RegisterComponentKey(registerKey, 0);
                         var resourceInput = new RegisterInputNode(destinationKey);
                         SetActiveOutput(destinationKey, resourceInput);
                         break;
                     }
-                case D3D10Opcode.Emit:
-                    // TODO: InsertAppend();
+                case D3D10Opcode.DclThreadGroup:
+                    {
+                        _registerState.NumThreads = [
+                            (int)instruction.GetParamIndexImmediate32(0, 0),
+                            (int)instruction.GetParamIndexImmediate32(0, 1),
+                            (int)instruction.GetParamIndexImmediate32(0, 2)];
+                        break;
+                    }
+                case D3D10Opcode.DclUnorderedAccessViewStructured:
+                    {
+                        var registerKey = instruction.GetParamRegisterKey(0);
+                        _registerState.DeclareUnorderedAccessView(registerKey);
+                        var destinationKey = new RegisterComponentKey(registerKey, 0);
+                        var resourceInput = new RegisterInputNode(destinationKey);
+                        SetActiveOutput(destinationKey, resourceInput);
+                        break;
+                    }
+                case D3D10Opcode.EndLoop:
+                    //EndLoop();
                     break;
+                case D3D10Opcode.Emit:
+                    InsertAppend();
+                    break;
+                case D3D10Opcode.Ilt:
+                    {
+                        // TODO
+                        break;
+                    }
+                case D3D10Opcode.Loop:
+                    {
+                        InsertStatement(new LoopStatement(0, ActiveOutputs));
+                        break;
+                    }
+                case D3D10Opcode.StoreStructured:
+                    {
+                        var output = new RegisterInputNode(GetDestinationKeys(instruction).First());
+                        var inputs = GetInputs(instruction, 3);
+                        InsertStatement(new StoreStructuredStatement(output, inputs[0], inputs[2], ActiveOutputs));
+                        break;
+                    }
                 case D3D10Opcode.DclGlobalFlags:
                 case D3D10Opcode.Ret:
                     break;
@@ -354,6 +406,16 @@ class InstructionParser
         }
         var clip = new ClipStatement(values, ActiveOutputs);
         InsertStatement(clip);
+    }
+
+    private void InsertAppend()
+    {
+        InsertStatement(new AppendStatement(ActiveOutputs));
+    }
+
+    private void InsertRestartStrip()
+    {
+        InsertStatement(new RestartStripStatement(ActiveOutputs));
     }
 
     private void InsertLoop(Instruction instruction)
@@ -543,31 +605,28 @@ class InstructionParser
         }
     }
 
-    private IEnumerable<RegisterComponentKey> GetDestinationKeys(Instruction instruction)
+    private static IEnumerable<RegisterComponentKey> GetDestinationKeys(Instruction instruction)
     {
         int index = instruction.GetDestinationParamIndex();
         int mask = instruction.GetDestinationWriteMask();
         return GetParameterRegisterKeys(instruction, index, mask);
     }
 
-    private IEnumerable<RegisterComponentKey> GetParameterRegisterKeys(Instruction instruction, int index, int mask)
+    private static IEnumerable<RegisterComponentKey> GetParameterRegisterKeys(Instruction instruction, int index, int mask)
     {
         RegisterKey registerKey = instruction.GetParamRegisterKey(index);
 
-        if (instruction is D3D10Instruction d3D10Instruction)
+        if (registerKey is D3D10RegisterKey d3D10RegisterKey)
         {
-            if (_shaderModel.Type == ShaderType.Geometry && (registerKey as D3D10RegisterKey).OperandType == OperandType.Input)
+            if (d3D10RegisterKey.GSVertex.HasValue)
             {
-                D3D10RegisterKey d3D10RegisterKey = d3D10Instruction.GetGSParamRegisterKey(index);
-                int attribute = d3D10RegisterKey.GSAttribute.Value;
-
-                for (int vertex = 0; vertex < d3D10RegisterKey.Number; vertex++)
+                for (int vertex = 0; vertex < d3D10RegisterKey.GSVertex.Value; vertex++)
                 {
                     for (int component = 0; component < 4; component++)
                     {
                         if ((mask & (1 << component)) == 0) continue;
 
-                        RegisterKey vertexKey = D3D10RegisterKey.CreateGSInput(vertex, attribute);
+                        RegisterKey vertexKey = D3D10RegisterKey.CreateGSInput(registerKey.Number, vertex);
                         yield return new RegisterComponentKey(vertexKey, component);
                     }
                 }
@@ -739,6 +798,9 @@ class InstructionParser
             case D3D10Opcode.Exp:
             case D3D10Opcode.Frc:
             case D3D10Opcode.GE:
+            case D3D10Opcode.IAdd:
+            case D3D10Opcode.IToF:
+            case D3D10Opcode.LdStructured:
             case D3D10Opcode.Log:
             case D3D10Opcode.Mad:
             case D3D10Opcode.Max:
@@ -753,6 +815,7 @@ class InstructionParser
                     switch (instruction.Opcode)
                     {
                         case D3D10Opcode.Add:
+                        case D3D10Opcode.IAdd:
                             return new AddOperation(inputs[0], inputs[1]);
                         case D3D10Opcode.DerivRtx:
                             return new PartialDerivativeXOperation(inputs[0]);
@@ -764,6 +827,8 @@ class InstructionParser
                             return new FractionalOperation(inputs[0]);
                         case D3D10Opcode.GE:
                             return new GreaterEqualOperation(inputs[0], inputs[1]);
+                        case D3D10Opcode.LdStructured:
+                            return new LoadStructuredNode(inputs[0], inputs[1], inputs[2]);
                         case D3D10Opcode.Log:
                             return new LogOperation(inputs[0]);
                         case D3D10Opcode.Mad:
@@ -773,6 +838,7 @@ class InstructionParser
                         case D3D10Opcode.Min:
                             return new MinimumOperation(inputs[0], inputs[1]);
                         case D3D10Opcode.Mov:
+                        case D3D10Opcode.IToF:
                             return new MoveOperation(inputs[0]);
                         case D3D10Opcode.MovC:
                             return new MoveConditionalOperation(inputs[0], inputs[1], inputs[2]);
@@ -783,6 +849,9 @@ class InstructionParser
                         case D3D10Opcode.Sqrt:
                             return new SquareRootOperation(inputs[0]);
                         case D3D10Opcode.SinCos:
+                            return componentIndex == 0
+                                ? new SineOperation(inputs[0])
+                                : new CosineOperation(inputs[0]);
                         default:
                             throw new NotImplementedException();
                     }
@@ -1117,6 +1186,7 @@ class InstructionParser
             case D3D10Opcode.DerivRty:
             case D3D10Opcode.Exp:
             case D3D10Opcode.Frc:
+            case D3D10Opcode.IToF:
             case D3D10Opcode.Log:
             case D3D10Opcode.Mov:
             case D3D10Opcode.Rsq:
@@ -1128,12 +1198,15 @@ class InstructionParser
             case D3D10Opcode.Dp3:
             case D3D10Opcode.Dp4:
             case D3D10Opcode.GE:
+            case D3D10Opcode.IAdd:
             case D3D10Opcode.Max:
             case D3D10Opcode.Min:
             case D3D10Opcode.Mul:
                 return 2;
             case D3D10Opcode.Mad:
             case D3D10Opcode.MovC:
+            case D3D10Opcode.LdStructured:
+            case D3D10Opcode.StoreStructured:
                 return 3;
             default:
                 throw new NotImplementedException();
@@ -1142,15 +1215,7 @@ class InstructionParser
 
     private RegisterComponentKey GetParamRegisterComponentKey(Instruction instruction, int paramIndex, int component)
     {
-        RegisterKey registerKey;
-        if (_shaderModel.Type == ShaderType.Geometry)
-        {
-            registerKey = (instruction as D3D10Instruction).GetGSParamRegisterKey(paramIndex);
-        }
-        else
-        {
-            registerKey = instruction.GetParamRegisterKey(paramIndex);
-        }
+        RegisterKey registerKey = instruction.GetParamRegisterKey(paramIndex);
 
         int componentIndex;
         if (registerKey is D3D9RegisterKey d3D9RegisterKey && d3D9RegisterKey.Type == RegisterType.MiscType && d3D9RegisterKey.Number == 1)

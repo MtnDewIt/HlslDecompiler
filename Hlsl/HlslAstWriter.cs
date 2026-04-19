@@ -23,7 +23,13 @@ public class HlslAstWriter : HlslWriter
     {
         if (_registers.MethodOutputRegisters.Count > 1)
         {
-            var outputStructType = _shader.Type == ShaderType.Pixel ? "PS_OUT" : "VS_OUT";
+            string outputStructType = _shader.Type switch
+            {
+                ShaderType.Pixel => "PS_OUT",
+                ShaderType.Vertex => "VS_OUT",
+                ShaderType.Geometry => "GS_OUT",
+                _ => throw new NotImplementedException(),
+            };
             WriteLine($"{outputStructType} o;");
             WriteLine();
         }
@@ -55,9 +61,21 @@ public class HlslAstWriter : HlslWriter
         {
             WriteAssignmentStatement(assignmentStatement);
         }
+        else if (statement is StoreStructuredStatement storeStructured)
+        {
+            WriteStoreStructuredStatement(storeStructured);
+        }
         else if (statement is ClipStatement clip)
         {
             WriteClipStatement(clip);
+        }
+        else if (statement is AppendStatement append)
+        {
+            WriteLine("stream.Append(o);");
+        }
+        else if (statement is RestartStripStatement restartStrip)
+        {
+            WriteLine("stream.RestartStrip();");
         }
         else if (statement is LoopStatement loop)
         {
@@ -83,7 +101,6 @@ public class HlslAstWriter : HlslWriter
 
     private void WriteAssignmentStatement(AssignmentStatement assignmentStatement)
     {
-
         IDictionary<RegisterComponentKey, HlslTreeNode> tempComponents = assignmentStatement.Outputs
                 .Where(o => {
                     if (!o.Key.RegisterKey.IsTempRegister)
@@ -112,6 +129,14 @@ public class HlslAstWriter : HlslWriter
             string compiled = _compiler.Compile(rootGroup.Value);
             WriteLine($"o.{outputRegister.Name} = {compiled};");
         }
+    }
+
+    private void WriteStoreStructuredStatement(StoreStructuredStatement storeStructured)
+    {
+        string compiledDestination = _compiler.Compile(Reduce(storeStructured.Destination));
+        string compiledAddress = _compiler.Compile(Reduce(storeStructured.Address));
+        string compiledValue = _compiler.Compile(Reduce(storeStructured.Value));
+        WriteLine($"{compiledDestination}[{compiledAddress}] = {compiledValue};");
     }
 
     private void WriteClipStatement( ClipStatement clip)

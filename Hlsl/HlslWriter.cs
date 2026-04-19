@@ -76,6 +76,11 @@ public abstract class HlslWriter
             WriteLine("[maxvertexcount({0})]", _registers.MaxOutputVertexCount);
         }
 
+        if (_registers.NumThreads != null)
+        {
+            WriteLine($"[numthreads({_registers.NumThreads[0]}, {_registers.NumThreads[1]}, {_registers.NumThreads[2]})]", _registers.MaxOutputVertexCount);
+        }
+
         string methodReturnType = GetMethodReturnType();
         string methodParameters = GetMethodParameters();
         string methodSemantic = GetMethodSemantic();
@@ -135,6 +140,14 @@ public abstract class HlslWriter
                 {
                     WriteLine($"SamplerState {resource.Name};");
                 }
+                else if (resource.ShaderInputType == D3DShaderInputType.Structured)
+                {
+                    WriteLine($"StructuredBuffer<float> {resource.Name} : register(t{resource.BindPoint});");
+                }
+                else if (resource.ShaderInputType == D3DShaderInputType.UavRWStructured)
+                {
+                    WriteLine($"RWStructuredBuffer<float> {resource.Name} : register(u{resource.BindPoint});");
+                }
                 else
                 {
                     throw new NotImplementedException();
@@ -156,7 +169,15 @@ public abstract class HlslWriter
         WriteLine($"struct {inputStructType}");
         WriteLine("{");
         indent = "\t";
-        foreach (var input in _registers.MethodInputRegisters.Values)
+        ICollection<RegisterDeclaration> inputs = _registers.MethodInputRegisters.Values;
+        if (_shader.Type == ShaderType.Geometry)
+        {
+            inputs = inputs
+                .GroupBy(r => (r.RegisterKey as D3D10RegisterKey).GetGSBaseKey())
+                .Select(g => g.First())
+                .ToList();
+        }
+        foreach (var input in inputs)
         {
             WriteLine(CompileRegisterDeclaration(input) + ';');
         }
@@ -167,7 +188,24 @@ public abstract class HlslWriter
 
     private void WriteOutputStructureDeclaration()
     {
-        var outputStructType = _shader.Type == ShaderType.Pixel ? "PS_OUT" : "VS_OUT";
+        string outputStructType;
+        if (_shader.Type == ShaderType.Pixel)
+        {
+            outputStructType = "PS_OUT";
+        }
+        else if (_shader.Type == ShaderType.Vertex)
+        {
+            outputStructType = "VS_OUT";
+        }
+        else if (_shader.Type == ShaderType.Geometry)
+        {
+            outputStructType = "GS_OUT";
+        }
+        else
+        {
+            return;
+        }
+
         WriteLine($"struct {outputStructType}");
         WriteLine("{");
         indent = "\t";
@@ -187,15 +225,16 @@ public abstract class HlslWriter
 
     protected string GetMethodReturnType()
     {
-        switch (_registers.MethodOutputRegisters.Count)
+        if (_shader.Type == ShaderType.Geometry)
         {
-            case 0:
-                return "void";
-            case 1:
-                return _registers.MethodOutputRegisters.First().TypeName;
-            default:
-                return _shader.Type == ShaderType.Pixel ? "PS_OUT" : "VS_OUT";
+            return "void";
         }
+        return _registers.MethodOutputRegisters.Count switch
+        {
+            0 => "void",
+            1 => _registers.MethodOutputRegisters.First().TypeName,
+            _ => _shader.Type == ShaderType.Pixel ? "PS_OUT" : "VS_OUT",
+        };
     }
 
     private string GetMethodSemantic()
@@ -210,6 +249,11 @@ public abstract class HlslWriter
 
     private string GetMethodParameters()
     {
+        if (_shader.Type == ShaderType.Geometry)
+        {
+            string primitive = _registers.InputPrimitive.Value.ToHlslString();
+            return $"{primitive} GS_IN i[3], inout TriangleStream<GS_OUT> stream";
+        }
         if (_registers.MethodInputRegisters.Count == 0)
         {
             return string.Empty;

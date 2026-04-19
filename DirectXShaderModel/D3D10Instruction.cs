@@ -41,36 +41,38 @@ public class D3D10Instruction : Instruction
     private D3D10GlobalFlags _globalFlags;
     private D3D10Primitive _primitive;
     private D3D10PrimitiveTopology _primitiveTopology;
+    private bool _isGeometryShader;
 
     public D3D10Opcode Opcode { get; }
     public D3D10OperandTokenCollection OperandTokens { get; }
 
-    public D3D10Instruction(D3D10Opcode opcode, uint[] paramTokens)
+    public D3D10Instruction(D3D10Opcode opcode, uint[] paramTokens, bool isGeometryShader)
     {
         Opcode = opcode;
-        OperandTokens = new D3D10OperandTokenCollection(paramTokens, opcode == D3D10Opcode.DclResource);
+        OperandTokens = new D3D10OperandTokenCollection(paramTokens, opcode);
+        _isGeometryShader = isGeometryShader;
     }
 
-    public D3D10Instruction(D3D10Opcode opcode, uint[] paramTokens, ResourceDimension resourceDimension)
-        : this(opcode, paramTokens)
+    public D3D10Instruction(D3D10Opcode opcode, uint[] paramTokens, ResourceDimension resourceDimension, bool isGeometryShader)
+        : this(opcode, paramTokens, isGeometryShader)
     {
         _resourceDimension = resourceDimension;
     }
 
-    public D3D10Instruction(D3D10Opcode opcode, D3D10GlobalFlags globalFlags)
-        : this(opcode, [])
+    public D3D10Instruction(D3D10Opcode opcode, D3D10GlobalFlags globalFlags, bool isGeometryShader)
+        : this(opcode, [], isGeometryShader)
     {
         _globalFlags = globalFlags;
     }
 
-    public D3D10Instruction(D3D10Opcode opcode, D3D10Primitive primitive)
-        : this(opcode, [])
+    public D3D10Instruction(D3D10Opcode opcode, D3D10Primitive primitive, bool isGeometryShader)
+        : this(opcode, [], isGeometryShader)
     {
         _primitive = primitive;
     }
 
-    public D3D10Instruction(D3D10Opcode opcode, D3D10PrimitiveTopology primitiveTopology)
-    : this(opcode, [])
+    public D3D10Instruction(D3D10Opcode opcode, D3D10PrimitiveTopology primitiveTopology, bool isGeometryShader)
+    : this(opcode, [], isGeometryShader)
     {
         _primitiveTopology = primitiveTopology;
     }
@@ -118,6 +120,9 @@ public class D3D10Instruction : Instruction
                 case D3D10Opcode.Dp3:
                 case D3D10Opcode.Dp4:
                 case D3D10Opcode.GE:
+                case D3D10Opcode.IAdd:
+                case D3D10Opcode.IToF:
+                case D3D10Opcode.LdStructured:
                 case D3D10Opcode.Mad:
                 case D3D10Opcode.Mov:
                 case D3D10Opcode.MovC:
@@ -129,6 +134,7 @@ public class D3D10Instruction : Instruction
                 case D3D10Opcode.SampleL:
                 case D3D10Opcode.SampleD:
                 case D3D10Opcode.SampleB:
+                case D3D10Opcode.SinCos:
                 case D3D10Opcode.Sqrt:
                     return true;
                 default:
@@ -156,36 +162,44 @@ public class D3D10Instruction : Instruction
 
     public override int GetDestinationWriteMask()
     {
-        int destinationParamIndex = GetDestinationParamIndex();
+        return GetOperandWriteMask(GetDestinationParamIndex());
+    }
 
-        D3D10OperandNumComponents componentSelection = GetOperandComponentSelection(destinationParamIndex);
-        if (componentSelection == D3D10OperandNumComponents.Operand1Component ||
-            componentSelection == D3D10OperandNumComponents.Operand4Component)
+    public int GetOperandWriteMask(int operandIndex)
+    {
+        D3D10OperandNumComponents componentSelection = GetOperandComponentSelection(operandIndex);
+        if (componentSelection == D3D10OperandNumComponents.Operand1Component)
         {
-            ComponentSelectionMode selectionMode = GetOperandComponentSelectionMode(destinationParamIndex);
+            throw new NotImplementedException();
+        }
+        else if (componentSelection == D3D10OperandNumComponents.Operand4Component)
+        {
+            Span<uint> span = OperandTokens.GetSpan(operandIndex);
+
+            ComponentSelectionMode selectionMode = GetOperandComponentSelectionMode(operandIndex);
             if (selectionMode == ComponentSelectionMode.Mask)
             {
-                Span<uint> span = OperandTokens.GetSpan(destinationParamIndex);
                 int mask = (int)((span[0] >> 4) & 0xF);
                 return mask;
             }
             else if (selectionMode == ComponentSelectionMode.Swizzle)
             {
+                int swizzle = (int)((span[0] >> 4) & 0xff);
                 int mask = 0;
-                int dimension = GetOperandIndexDimension(destinationParamIndex);
-                for (int i = 0; i < dimension; i++)
+                for (int i = 0; i < 4; i++)
                 {
-                    int swizzle = GetOperandComponentSwizzle(destinationParamIndex, i);
-                    if (swizzle != i)
+                    int componentSwizzle = (swizzle >> (2 * i)) & 3;
+                    if (componentSwizzle != i)
                     {
-                        mask |= 1 << swizzle;
+                        mask |= 1 << componentSwizzle;
                     }
                 }
                 return mask;
             }
             else if (selectionMode == ComponentSelectionMode.Select1)
             {
-                throw new NotImplementedException();
+                int name = (int)((span[0] >> 4) & 0x2);
+                return 1 << name;
             }
         }
         else if (componentSelection == D3D10OperandNumComponents.Operand0Component)
@@ -254,33 +268,6 @@ public class D3D10Instruction : Instruction
     {
         Span<uint> span = OperandTokens.GetSpan(index);
         return (ComponentSelectionMode)((span[0] >> 2) & 3);
-    }
-
-    private int GetOperandComponentSwizzle(int index, int component)
-    {
-        D3D10OperandNumComponents componentSelection = GetOperandComponentSelection(index);
-        if (componentSelection == D3D10OperandNumComponents.Operand4Component)
-        {
-            ComponentSelectionMode selectionMode = GetOperandComponentSelectionMode(index);
-            if (selectionMode == ComponentSelectionMode.Mask)
-            {
-                Span<uint> span = OperandTokens.GetSpan(index);
-                int mask = (int)((span[0] >> 4) & 0xF);
-                throw new NotImplementedException();
-                //return component;
-            }
-            else if (selectionMode == ComponentSelectionMode.Swizzle)
-            {
-                Span<uint> span = OperandTokens.GetSpan(index);
-                int swizzle = (int)((span[0] >> 2) & 3);
-                return (swizzle >> (2 * component)) & 3;
-            }
-            else if (selectionMode == ComponentSelectionMode.Select1)
-            {
-                throw new NotImplementedException();
-            }
-        }
-        throw new NotImplementedException();
     }
 
     public override int GetSourceSwizzle(int srcIndex)
@@ -392,27 +379,22 @@ public class D3D10Instruction : Instruction
 
     public override string GetDeclSemantic()
     {
-        string name = GetOperandType(GetDestinationParamIndex()) switch
+        int destIndex = GetDestinationParamIndex();
+        OperandType operandType = GetOperandType(destIndex);
+        string name = operandType switch
         {
             OperandType.Input => "SV_Position",
             OperandType.Output => "SV_Target",
+            OperandType.InputThreadID => "SV_DispatchThreadID",
             _ => throw new NotImplementedException()
         };
-        int declIndex = (int) OperandTokens.GetSpan(0)[1];
-        if (declIndex != 0)
+        if (operandType != OperandType.InputThreadID)
         {
+            int numberIndex = (_isGeometryShader && operandType == OperandType.Input) ? 2 : 1;
+            int declIndex = (int) GetParamIndexImmediate32(destIndex, numberIndex);
             name += declIndex;
         }
         return name;
-    }
-
-    public override int GetDestinationSemanticSize()
-    {
-        if (GetOperandType(GetDestinationParamIndex()) == OperandType.OutputDepth)
-        {
-            return 1;
-        }
-        return 4;
     }
 
     private byte[] GetOperandValueBytes(int index, int componentIndex)
@@ -478,7 +460,7 @@ public class D3D10Instruction : Instruction
         return D3D10OperandModifier.None;
     }
 
-    public override RegisterKey GetParamRegisterKey(int index)
+    public override D3D10RegisterKey GetParamRegisterKey(int index)
     {
         OperandType operandType = GetOperandType(index);
         if (operandType == OperandType.ConstantBuffer)
@@ -496,21 +478,19 @@ public class D3D10Instruction : Instruction
             }
             return new D3D10RegisterKey(GetParamSingle(index));
         }
+        else if (operandType == OperandType.InputThreadID)
+        {
+            return new D3D10RegisterKey(operandType, 0);
+        }
+        if (_isGeometryShader && operandType == OperandType.Input)
+        {
+            return D3D10RegisterKey.CreateGSInput(
+                (int)GetParamIndexImmediate32(index, 2),
+                (int)GetParamIndexImmediate32(index, 1));
+        }
         return new D3D10RegisterKey(
             operandType,
             GetParamRegisterNumber(index));
-    }
-
-    public D3D10RegisterKey GetGSParamRegisterKey(int index)
-    {
-        OperandType operandType = GetOperandType(index);
-        if (operandType == OperandType.Input)
-        {
-            return D3D10RegisterKey.CreateGSInput(
-                (int) GetParamIndexImmediate32(index, 1),
-                (int) GetParamIndexImmediate32(index, 2));
-        }
-        return GetParamRegisterKey(index) as D3D10RegisterKey;
     }
 
     public OperandType GetOperandType(int index)
@@ -532,6 +512,11 @@ public class D3D10Instruction : Instruction
     public int GetResourceReturnTypeToken()
     {
         return (int) GetParamIndexImmediate32(0, 2);
+    }
+
+    public uint GetResourceStructuredBufferStride()
+    {
+        return GetParamIndexImmediate32(1, 0);
     }
 
     public uint GetParamIndexImmediate32(int operandIndex, int index)

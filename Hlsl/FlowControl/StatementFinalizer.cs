@@ -230,13 +230,13 @@ public class StatementFinalizer
     private static void SetReturnStatement(IList<IStatement> statements)
     {
         IStatement lastStatement = statements.Last();
-        if (lastStatement is ReturnStatement)
+        if (lastStatement is ReturnStatement || lastStatement is AppendStatement || lastStatement is StoreStructuredStatement)
         {
             return;
         }
-        if (lastStatement is AssignmentStatement assignment)
+        if (lastStatement is AssignmentStatement)
         {
-            statements[statements.Count - 1] = new ReturnStatement(assignment.Outputs);
+            statements[statements.Count - 1] = new ReturnStatement(lastStatement.Outputs);
             return;
         }
         if (lastStatement is IfStatement ifStatement)
@@ -246,6 +246,12 @@ public class StatementFinalizer
             {
                 SetReturnStatement(ifStatement.FalseBody);
             }
+            return;
+        }
+        if (lastStatement is LoopStatement loopStatement)
+        {
+            SetReturnStatement(loopStatement.Body);
+            statements[statements.Count - 1] = new ReturnStatement(lastStatement.Outputs);
             return;
         }
         throw new NotImplementedException();
